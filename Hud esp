@@ -1,0 +1,516 @@
+--[[
+  GAKURAN HUD - ESP + AIMBOT + FOV + XRAY (DELTA MOBILE)
+  - Panel minimizable (grande/pequeña) y arrastrable
+  - Circulo de FOV que define el rango de fijacion al enemigo mas cercano
+  - Nombres de enemigos en pantalla y X-Ray a traves de paredes
+  - Aim assist / aimbot continuo siguiendo objetivos en movimiento
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    pcall(function()
+        LocalPlayer = Players.LocalPlayer or Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    end)
+    LocalPlayer = Players.LocalPlayer
+end
+if not LocalPlayer then
+    return
+end
+
+local Camera = workspace.CurrentCamera
+
+local Settings = {
+    ESP = true,
+    Names = true,
+    XRay = true,          -- Ver enemigos a traves de paredes
+    Aimbot = false,       -- Seguimiento continuo al enemigo mas cercano dentro del FOV
+    ShowFOV = true,       -- Mostrar circulo de FOV en pantalla
+    FOVRadius = 130,      -- Radio del circulo de FOV en pixeles
+    TeamCheck = false,    -- En Gakuran suele ser FFA; activable desde el HUD
+    Minimized = false,
+    AimHeadFirst = true,
+    Prediction = 0.12
+}
+
+-- Contenedor UI compatible con Delta (gethui / CoreGui / PlayerGui)
+local function getGuiParent()
+    if type(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then
+            return hui
+        end
+    end
+
+    local okCore, coreGui = pcall(function()
+        return game:GetService("CoreGui")
+    end)
+    if okCore and coreGui then
+        local testOk = pcall(function()
+            local probe = Instance.new("Folder")
+            probe.Name = "GakuranFovProbe"
+            probe.Parent = coreGui
+            probe:Destroy()
+        end)
+        if testOk then
+            return coreGui
+        end
+    end
+
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then
+        pcall(function()
+            pg = LocalPlayer:WaitForChild("PlayerGui", 5)
+        end)
+    end
+    return pg
+end
+
+local guiParent = getGuiParent()
+if not guiParent then
+    return
+end
+
+pcall(function()
+    local old = guiParent:FindFirstChild("GakuranFovHUD")
+    if old then old:Destroy() end
+end)
+
+local Screen = Instance.new("ScreenGui")
+Screen.Name = "GakuranFovHUD"
+Screen.ResetOnSpawn = false
+
+-- Circulo de FOV centrado en pantalla (hecho con UIStroke circular para maxima compatibilidad)
+local FovCircle = Instance.new("Frame")
+FovCircle.Name = "FOVCircle"
+FovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+FovCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+FovCircle.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
+FovCircle.BackgroundTransparency = 1
+FovCircle.Visible = Settings.ShowFOV
+FovCircle.Parent = Screen
+
+Instance.new("UICorner", FovCircle).CornerRadius = UDim.new(1, 0)
+
+local FovStroke = Instance.new("UIStroke")
+FovStroke.Color = Color3.fromRGB(90, 170, 255)
+FovStroke.Thickness = 1.8
+FovStroke.Transparency = 0.2
+FovStroke.Parent = FovCircle
+
+-- Panel principal minimizable y arrastrable
+local PANEL_W = 210
+local EXPANDED_H = 296
+local MINIMIZED_H = 36
+
+local Main = Instance.new("Frame")
+Main.Name = "MainPanel"
+Main.Size = UDim2.new(0, PANEL_W, 0, EXPANDED_H)
+Main.Position = UDim2.new(0, 14, 0, 76)
+Main.BackgroundColor3 = Color3.fromRGB(20, 23, 31)
+Main.BorderSizePixel = 0
+Main.ClipsDescendants = true
+Main.Parent = Screen
+
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, MINIMIZED_H)
+Header.Position = UDim2.new(0, 0, 0, 0)
+Header.BackgroundColor3 = Color3.fromRGB(34, 41, 58)
+Header.BorderSizePixel = 0
+Header.Parent = Main
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -42, 1, 0)
+Title.Position = UDim2.new(0, 8, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "GAKURAN HUD"
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.TextSize = 13
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Name = "MinimizeBtn"
+MinimizeBtn.Size = UDim2.new(0, 28, 0, 26)
+MinimizeBtn.Position = UDim2.new(1, -33, 0, 5)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(58, 72, 102)
+MinimizeBtn.BorderSizePixel = 0
+MinimizeBtn.Text = "−"
+MinimizeBtn.TextColor3 = Color3.new(1, 1, 1)
+MinimizeBtn.TextSize = 17
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.Parent = Header
+
+Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 6)
+
+local Content = Instance.new("Frame")
+Content.Name = "Content"
+Content.Size = UDim2.new(1, -8, 1, -44)
+Content.Position = UDim2.new(0, 4, 0, 40)
+Content.BackgroundTransparency = 1
+Content.BorderSizePixel = 0
+Content.Parent = Main
+
+local function setMinimized(state)
+    Settings.Minimized = state
+    Content.Visible = not state
+    MinimizeBtn.Text = state and "+" or "−"
+    Main.Size = state
+        and UDim2.new(0, PANEL_W, 0, MINIMIZED_H)
+        or UDim2.new(0, PANEL_W, 0, EXPANDED_H)
+end
+
+MinimizeBtn.MouseButton1Click:Connect(function()
+    setMinimized(not Settings.Minimized)
+end)
+
+-- Arrastrar HUD en tactil y mouse
+do
+    local dragging = false
+    local dragStart, startPos
+
+    Header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = Main.Position
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local delta = input.Position - dragStart
+            Main.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+local COLOR_ON = Color3.fromRGB(38, 125, 82)
+local COLOR_OFF = Color3.fromRGB(52, 56, 68)
+local COLOR_CFG = Color3.fromRGB(45, 56, 80)
+local TEXT_ON = Color3.fromRGB(235, 255, 245)
+local TEXT_OFF = Color3.fromRGB(165, 170, 185)
+
+local function applyToggleStyle(btn, isOn, label)
+    btn.Text = label .. ": " .. (isOn and "ON" or "OFF")
+    btn.BackgroundColor3 = isOn and COLOR_ON or COLOR_OFF
+    btn.TextColor3 = isOn and TEXT_ON or TEXT_OFF
+end
+
+local function createToggle(label, initial, yPos, onToggle)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -4, 0, 28)
+    btn.Position = UDim2.new(0, 2, 0, yPos)
+    btn.BorderSizePixel = 0
+    btn.TextSize = 11
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = Content
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    applyToggleStyle(btn, initial, label)
+
+    btn.MouseButton1Click:Connect(function()
+        local nextVal = onToggle()
+        applyToggleStyle(btn, nextVal, label)
+    end)
+    return btn
+end
+
+local function createAction(text, yPos, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -4, 0, 28)
+    btn.Position = UDim2.new(0, 2, 0, yPos)
+    btn.BackgroundColor3 = COLOR_CFG
+    btn.BorderSizePixel = 0
+    btn.Text = text
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.TextSize = 11
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = Content
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+    btn.MouseButton1Click:Connect(function()
+        callback(btn)
+    end)
+    return btn
+end
+
+-- Botones de control
+createToggle("ESP", Settings.ESP, 0, function()
+    Settings.ESP = not Settings.ESP
+    return Settings.ESP
+end)
+
+createToggle("NOMBRES", Settings.Names, 32, function()
+    Settings.Names = not Settings.Names
+    return Settings.Names
+end)
+
+createToggle("X-RAY", Settings.XRay, 64, function()
+    Settings.XRay = not Settings.XRay
+    return Settings.XRay
+end)
+
+createToggle("CIRCULO FOV", Settings.ShowFOV, 96, function()
+    Settings.ShowFOV = not Settings.ShowFOV
+    FovCircle.Visible = Settings.ShowFOV
+    return Settings.ShowFOV
+end)
+
+createToggle("AIMBOT", Settings.Aimbot, 128, function()
+    Settings.Aimbot = not Settings.Aimbot
+    return Settings.Aimbot
+end)
+
+createToggle("TEAM CHECK", Settings.TeamCheck, 160, function()
+    Settings.TeamCheck = not Settings.TeamCheck
+    return Settings.TeamCheck
+end)
+
+local fovPresets = { 90, 130, 180, 240 }
+createAction("TAMANO FOV: " .. tostring(Settings.FOVRadius), 192, function(btn)
+    local nextIdx = 1
+    for i, r in ipairs(fovPresets) do
+        if r == Settings.FOVRadius then
+            nextIdx = (i % #fovPresets) + 1
+            break
+        end
+    end
+    Settings.FOVRadius = fovPresets[nextIdx]
+    FovCircle.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
+    btn.Text = "TAMANO FOV: " .. tostring(Settings.FOVRadius)
+end)
+
+local InfoLabel = Instance.new("TextLabel")
+InfoLabel.Size = UDim2.new(1, -4, 0, 22)
+InfoLabel.Position = UDim2.new(0, 2, 0, 224)
+InfoLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 44)
+InfoLabel.BorderSizePixel = 0
+InfoLabel.Text = "Objetivo: Ninguno"
+InfoLabel.TextColor3 = Color3.fromRGB(185, 200, 225)
+InfoLabel.TextSize = 10
+InfoLabel.Font = Enum.Font.GothamBold
+InfoLabel.Parent = Content
+Instance.new("UICorner", InfoLabel).CornerRadius = UDim.new(0, 6)
+
+-- Montar UI
+pcall(function()
+    Screen.Parent = guiParent
+end)
+
+-- Logica de enemigos, ESP, Nombres y Aimbot continuo dentro del FOV
+local Highlights = {}
+local NameTags = {}
+
+local function getAliveRoot(player)
+    if not player or player == LocalPlayer then return nil, nil, nil end
+    if Settings.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then return nil, nil, nil end
+    local char = player.Character
+    if not char then return nil, nil, nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not hum or hum.Health <= 0 or not root then return nil, nil, nil end
+    return char, hum, root
+end
+
+local function getAimPoint(char)
+    if not char then return nil end
+    local part = Settings.AimHeadFirst
+        and (char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"))
+        or (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Head"))
+    if not part then return nil end
+    local vel = part.AssemblyLinearVelocity or Vector3.zero
+    return part.Position + (vel * Settings.Prediction)
+end
+
+local function clearVisualsFor(player)
+    if Highlights[player] then
+        pcall(function() Highlights[player]:Destroy() end)
+        Highlights[player] = nil
+    end
+    if NameTags[player] then
+        pcall(function() NameTags[player]:Destroy() end)
+        NameTags[player] = nil
+    end
+end
+
+local function ensureHighlight(player, char, isLockedTarget)
+    local hl = Highlights[player]
+    if not hl then
+        hl = Instance.new("Highlight")
+        hl.Name = "GakuranHL"
+        hl.OutlineColor = Color3.new(1, 1, 1)
+        hl.Parent = char
+        Highlights[player] = hl
+    elseif hl.Parent ~= char then
+        hl.Parent = char
+    end
+
+    hl.DepthMode = Settings.XRay
+        and Enum.HighlightDepthMode.AlwaysOnTop
+        or Enum.HighlightDepthMode.Occluded
+
+    hl.FillColor = isLockedTarget
+        and Color3.fromRGB(255, 175, 0)
+        or Color3.fromRGB(255, 65, 65)
+    hl.FillTransparency = 0.45
+    hl.OutlineTransparency = 0
+end
+
+local function ensureNameTag(player, root, distStuds, isLockedTarget)
+    local tag = NameTags[player]
+    if not tag then
+        tag = Instance.new("BillboardGui")
+        tag.Name = "GakuranNameTag"
+        tag.Size = UDim2.new(0, 150, 0, 24)
+        tag.StudsOffset = Vector3.new(0, 3.2, 0)
+        tag.AlwaysOnTop = Settings.XRay
+        tag.Parent = root
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Name = "Label"
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.TextStrokeTransparency = 0.2
+        lbl.TextStrokeColor3 = Color3.new(0, 0, 0)
+        lbl.TextSize = 12
+        lbl.Font = Enum.Font.GothamBold
+        lbl.Parent = tag
+        NameTags[player] = tag
+    else
+        if tag.Parent ~= root then
+            tag.Parent = root
+        end
+        tag.AlwaysOnTop = Settings.XRay
+    end
+
+    local lbl = tag:FindFirstChild("Label")
+    if lbl then
+        lbl.Text = string.format("%s [%.0fm]", player.DisplayName, distStuds)
+        lbl.TextColor3 = isLockedTarget
+            and Color3.fromRGB(255, 195, 40)
+            or Color3.new(1, 1, 1)
+    end
+end
+
+local function findClosestEnemyInFOV()
+    if not Camera then Camera = workspace.CurrentCamera end
+    if not Camera then return nil end
+
+    local vp = Camera.ViewportSize
+    local screenCenter = Vector2.new(vp.X * 0.5, vp.Y * 0.5)
+    local myChar, _, myRoot = getAliveRoot(LocalPlayer)
+    local originPos = myRoot and myRoot.Position or Camera.CFrame.Position
+
+    local bestTarget = nil
+    local bestDist = math.huge
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local char, _, root = getAliveRoot(plr)
+        if char and root then
+            local aimPos = getAimPoint(char)
+            if aimPos then
+                local screenPt, onScreen = Camera:WorldToViewportPoint(aimPos)
+                if onScreen and screenPt.Z > 0 then
+                    local distFromCenter = (Vector2.new(screenPt.X, screenPt.Y) - screenCenter).Magnitude
+                    if distFromCenter <= Settings.FOVRadius then
+                        local worldDist = (root.Position - originPos).Magnitude
+                        if worldDist < bestDist then
+                            bestDist = worldDist
+                            bestTarget = {
+                                player = plr,
+                                char = char,
+                                root = root,
+                                aimPos = aimPos,
+                                worldDist = worldDist
+                            }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestTarget
+end
+
+Players.PlayerRemoving:Connect(clearVisualsFor)
+
+RunService.RenderStepped:Connect(function()
+    pcall(function()
+        if not Camera then
+            Camera = workspace.CurrentCamera
+        end
+        if not Camera then
+            return
+        end
+
+        local vp = Camera.ViewportSize
+        FovCircle.Position = UDim2.new(0, vp.X * 0.5, 0, vp.Y * 0.5)
+        FovCircle.Size = UDim2.new(0, Settings.FOVRadius * 2, 0, Settings.FOVRadius * 2)
+        FovCircle.Visible = Settings.ShowFOV
+
+        local locked = findClosestEnemyInFOV()
+        local lockedPlayer = locked and locked.player or nil
+
+        if locked then
+            InfoLabel.Text = string.format("Fijado: %s (%.0fm)", locked.player.DisplayName, locked.worldDist)
+            InfoLabel.TextColor3 = Color3.fromRGB(255, 200, 70)
+            FovStroke.Color = Color3.fromRGB(255, 180, 30)
+        else
+            InfoLabel.Text = "Objetivo: Ninguno en FOV"
+            InfoLabel.TextColor3 = Color3.fromRGB(185, 200, 225)
+            FovStroke.Color = Color3.fromRGB(90, 170, 255)
+        end
+
+        if Settings.Aimbot and locked and locked.aimPos then
+            if Camera.CameraType ~= Enum.CameraType.Scriptable then
+                Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, locked.aimPos)
+            end
+        end
+
+        local _, _, myRoot = getAliveRoot(LocalPlayer)
+        local myPos = myRoot and myRoot.Position or Camera.CFrame.Position
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local char, _, root = getAliveRoot(plr)
+            local isLocked = (plr == lockedPlayer)
+
+            if char and root then
+                if Settings.ESP then
+                    ensureHighlight(plr, char, isLocked)
+                elseif Highlights[plr] then
+                    pcall(function() Highlights[plr]:Destroy() end)
+                    Highlights[plr] = nil
+                end
+
+                if Settings.Names then
+                    local d = (root.Position - myPos).Magnitude
+                    ensureNameTag(plr, root, d, isLocked)
+                elseif NameTags[plr] then
+                    pcall(function() NameTags[plr]:Destroy() end)
+                    NameTags[plr] = nil
+                end
+            else
+                clearVisualsFor(plr)
+            end
+        end
+    end)
+end)
